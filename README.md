@@ -54,6 +54,8 @@ Tersedia pemilih `MODE_OPERASI` di dalam file utama maupun sketch terpisah:
 
 ## 🔌 Skema & Gambar Rangkaian (Wiring Diagram)
 
+![Skema Rangkaian Robot Wall Follower](circuit_diagram.png)
+
 Skema perkabelan dan visualisasi rangkaian elektronik interaktif lengkap dapat dilihat langsung melalui tautan proyek Cirkit Designer berikut:
 
 🔗 **[Buka Skema Rangkaian Interaktif di Cirkit Designer](https://app.cirkitdesigner.com/project/30397120-9bb1-4c82-b9bd-54b2176aca74)**
