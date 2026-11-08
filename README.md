@@ -97,12 +97,12 @@ Video simulasi lengkap dapat dilihat di folder `test/`:
 ## 📂 Struktur File
 
 ```
-├── wall_follower_v2.ino          # Program utama Wall Maze Solver
-├── wall_follower_v2 (1).ino      # File kerja utama
+├── Robot_Wall_Follower.ino       # Program utama Robot Wall Maze Solver
 ├── Test_Sensor.ino               # Sketch mandiri tes pembacaan sensor ultrasonik
 ├── Test_Motor.ino                # Sketch mandiri tes gerakan dan kalibrasi belok
+├── circuit_diagram.png           # Gambar diagram rangkaian elektronik
 ├── README.md                     # Dokumentasi proyek
-├── WallMazeSolver/               # Sumber kode referensi repo GitHub
+├── WallMazeSolver/               # Sumber kode referensi repo GitHub asli
 ├── Maze Robot Algorithm/         # Algoritma & tes motor referensi
 └── test/                         # Arena Webots, skrip simulasi Python & video hasil uji
 ```
