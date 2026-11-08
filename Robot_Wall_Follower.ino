@@ -71,9 +71,9 @@ const int SPEED_FAST       = 85;     // Kecepatan belok halus cepat (sebelumnya 
 const int SPEED_TURN       = 95;     // Kecepatan putar di tempat (sebelumnya 150)
 const int SPEED_BACK       = 70;     // Kecepatan mundur sedikit sebelum putar (sebelumnya 110)
 
-// Kalibrasi putaran berbasis waktu (dihitung proporsional agar pas 90°):
-const unsigned long TURN_90_MS  = 200;  // 300 ms menghasilkan ~135°, dipangkas 1/3 menjadi 200 ms untuk 90°
-const unsigned long TURN_180_MS = 400;  // Durasi putar balik 180°
+// Kalibrasi putaran berbasis waktu (titik tengah pas antara 200ms [45°] dan 300ms [135°]):
+const unsigned long TURN_90_MS  = 250;  // Titik tengah pas 90°
+const unsigned long TURN_180_MS = 500;  // Titik pas putar balik 180°
 
 // Trim motor jika salah satu motor lebih cepat dari yang lain:
 const float TRIM_KIRI  = 0.89;

@@ -28,9 +28,9 @@ const int IN4 = 13;   // Direction Motor Kanan
 const int SPEED_NORMAL = 80;   // Kecepatan maju lurus (sebelumnya 135)
 const int SPEED_TURN   = 95;   // Kecepatan putar di tempat (sebelumnya 150)
 
-// Durasi putaran terkalibrasi pas 90°:
-const unsigned long TIME_TURN_90  = 200;   // Durasi putar 90°
-const unsigned long TIME_TURN_180 = 400;  // Durasi putar 180°
+// Durasi putaran terkalibrasi pas 90° (titik tengah 250 ms):
+const unsigned long TIME_TURN_90  = 250;   // Durasi putar 90°
+const unsigned long TIME_TURN_180 = 500;  // Durasi putar 180°
 
 const float TRIM_KIRI  = 0.89;
 const float TRIM_KANAN = 1.00;
