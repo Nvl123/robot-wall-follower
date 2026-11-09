@@ -83,26 +83,36 @@ Skema perkabelan dan visualisasi rangkaian elektronik interaktif lengkap dapat d
 | **Sensor Depan** | Pin 5 | Pin 4 |
 | **Sensor Kiri (90°)** | Pin 7 | Pin 6 |
 
+### Modul Gyroscope MPU-6050 / GY-521 (Khusus Edisi MPU-6050):
+| Pin Modul GY-521 | Hubungkan ke Arduino UNO | Keterangan |
+| :---: | :---: | :--- |
+| **VCC** | **5V** | Daya modul (onboard 3.3V LDO) |
+| **GND** | **GND** | Ground |
+| **SDA** | **Pin A4** | Jalur Data I2C |
+| **SCL** | **Pin A5** | Jalur Clock I2C |
+
 ---
 
 ## 🎥 Hasil Pengujian & Simulasi
 
-Pengujian simulasi komputer telah dilakukan pada denah arena berukuran $4.0\text{ m} \times 2.0\text{ m}$ (10 kolom x 5 baris sel 40 cm). Robot berhasil memecahkan labirin dari **Start 1** hingga menembus garis **Finish 1** dalam waktu **76.43 detik**.
+Pengujian simulasi komputer telah dilakukan pada denah arena berukuran $4.0\text{ m} \times 2.0\text{ m}$ (10 kolom x 5 baris sel 40 cm). Robot berhasil memecahkan labirin dari **Start 1** hingga menembus garis **Finish 1**.
 
 Video simulasi lengkap dapat dilihat di folder `test/`:
-- [simulasi_maze_wall_follower.mp4](test/simulasi_maze_wall_follower.mp4)
+- [simulasi_maze_wall_follower_mpu6050.mp4](test/simulasi_maze_wall_follower_mpu6050.mp4) *(Edisi MPU-6050: Belokan pas 90.0° mutlak & Heading Lock)*
+- [simulasi_maze_wall_follower.mp4](test/simulasi_maze_wall_follower.mp4) *(Edisi Standar: Timed pivot)*
 
 ---
 
 ## 📂 Struktur File
 
 ```
-├── Robot_Wall_Follower.ino       # Program utama Robot Wall Maze Solver
-├── Test_Sensor.ino               # Sketch mandiri tes pembacaan sensor ultrasonik
-├── Test_Motor.ino                # Sketch mandiri tes gerakan dan kalibrasi belok
-├── circuit_diagram.png           # Gambar diagram rangkaian elektronik
-├── README.md                     # Dokumentasi proyek
-├── WallMazeSolver/               # Sumber kode referensi repo GitHub asli
-├── Maze Robot Algorithm/         # Algoritma & tes motor referensi
-└── test/                         # Arena Webots, skrip simulasi Python & video hasil uji
+├── Robot_Wall_Follower_MPU6050.ino # Program Wall Maze Solver EDISI GYRO (MPU-6050 / GY-521)
+├── Robot_Wall_Follower.ino         # Program Wall Maze Solver EDISI STANDAR (Timed-based)
+├── Test_Sensor.ino                 # Sketch mandiri tes pembacaan sensor ultrasonik
+├── Test_Motor.ino                  # Sketch mandiri tes gerakan dan kalibrasi belok
+├── circuit_diagram.png             # Gambar diagram rangkaian elektronik
+├── README.md                       # Dokumentasi proyek
+├── WallMazeSolver/                 # Sumber kode referensi repo GitHub asli
+├── Maze Robot Algorithm/           # Algoritma & tes motor referensi
+└── test/                           # Arena Webots, skrip simulasi Python & video hasil uji
 ```
