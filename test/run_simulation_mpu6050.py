@@ -20,14 +20,13 @@ H_ARENA = ROWS * CELL
 # Dimensi Robot (meter)
 ROBOT_W = 0.16       # 16 cm
 ROBOT_L = 0.16       # 16 cm
-WHEELBASE = 0.14     # 14 cm
 
 # Ambang Batas Sensor dari Robot_Wall_Follower_MPU6050.ino
 TARGET_TENGAH  = 12.0  # cm
 AMBANG_DEKAT   = 11.0  # cm
 AMBANG_JAUH    = 13.0  # cm
 AMBANG_TERBUKA = 22.0  # cm
-DEPAN_STOP     = 15.0  # cm (ruang henti aman)
+DEPAN_STOP     = 15.0  # cm
 
 # Kecepatan Motor
 SPEED_NORMAL     = 80
@@ -40,7 +39,7 @@ SPEED_BACK       = 70
 # Start & Finish (meter)
 START_X = 4.5 * CELL   # 1.80 m (Start 1)
 START_Y = 0.5 * CELL   # 0.20 m
-START_THETA = math.pi / 2  # Menghadap ke bawah (South, row 1)
+START_THETA = math.pi / 2  # Menghadap ke bawah (South, 90°)
 
 FINISH_X_MIN = 3.0 * CELL  # 1.20 m
 FINISH_X_MAX = 4.0 * CELL  # 1.60 m
@@ -155,10 +154,8 @@ def generate_video_mpu6050():
     theta = START_THETA
 
     # Variabel simulasi Gyroscope MPU-6050
-    gyro_relative_yaw = 0.0  # Sudut relatif saat manuver belok
-    gyro_total_yaw = math.degrees(theta)
-    gyro_target_deg = 0.0
-    turn_direction = 0  # +1: Kanan (CW), -1: Kiri (CCW)
+    target_heading_deg = 90.0  # Dimulai menghadap South (90°)
+    turn_direction = 0
 
     state = 'FOLLOW'
     state_timer = 0.0
@@ -172,7 +169,7 @@ def generate_video_mpu6050():
     writer = imageio.get_writer(video_filename, fps=FPS, codec='libx264', quality=8)
 
     step = 0
-    max_steps = 30 * 95
+    max_steps = 30 * 85
     finish_hold_counter = 0
 
     while step < max_steps:
@@ -202,42 +199,54 @@ def generate_video_mpu6050():
             else:
                 # Penelusuran Dinding Kanan dengan Heading Lock
                 if cmRF >= AMBANG_DEKAT and cmRF <= AMBANG_JAUH:
+                    # Target tengah lorong pas: kunci arah sudut lorong
+                    target_th_rad = math.radians(target_heading_deg)
+                    d_th = (target_th_rad - theta + math.pi) % (2 * math.pi) - math.pi
+                    omega = d_th * 4.0
                     pwm_l, pwm_r = SPEED_NORMAL, SPEED_NORMAL
-                    action_text = "Maju Lurus (Heading Lock Aktif)"
+                    action_text = f"Maju Lurus (Heading Lock {target_heading_deg:.0f}°)"
                     action_color = (255, 255, 255)
                 elif cmRF > AMBANG_JAUH:
                     if cmRF >= AMBANG_TERBUKA:
                         if cmLF >= AMBANG_DEKAT and cmLF <= AMBANG_JAUH:
+                            target_th_rad = math.radians(target_heading_deg)
+                            d_th = (target_th_rad - theta + math.pi) % (2 * math.pi) - math.pi
+                            omega = d_th * 4.0
                             pwm_l, pwm_r = SPEED_NORMAL, SPEED_NORMAL
                             action_text = "Maju Lurus (Pemandu Dinding Kiri)"
                             action_color = (200, 230, 255)
                         elif cmLF > AMBANG_JAUH and cmLF < AMBANG_TERBUKA:
+                            omega = -0.35
                             pwm_l, pwm_r = SPEED_SLOW, SPEED_FAST
                             action_text = "Koreksi Kiri Halus"
                             action_color = (180, 220, 255)
                         elif cmLF < AMBANG_DEKAT:
+                            omega = 0.35
                             pwm_l, pwm_r = SPEED_FAST, SPEED_SLOW
                             action_text = "Koreksi Kanan Halus"
                             action_color = (255, 200, 180)
                         else:
+                            target_th_rad = math.radians(target_heading_deg)
+                            d_th = (target_th_rad - theta + math.pi) % (2 * math.pi) - math.pi
+                            omega = d_th * 4.0
                             pwm_l, pwm_r = SPEED_NORMAL, SPEED_NORMAL
                             action_text = "Maju Lurus (Simpang Terbuka)"
                             action_color = (220, 220, 220)
                     else:
+                        omega = 0.35
                         pwm_l, pwm_r = SPEED_FAST, SPEED_SLOW
                         action_text = "Koreksi Kanan Halus"
                         action_color = (255, 220, 150)
                 elif cmRF < AMBANG_DEKAT:
+                    omega = -0.35
                     pwm_l, pwm_r = SPEED_SLOW, SPEED_FAST
                     action_text = "Koreksi Kiri Halus (Menjauhi Kanan)"
                     action_color = (150, 220, 255)
 
-                v = ((pwm_l + pwm_r) / 2.0 / 255.0) * 0.35
-                omega = ((pwm_l - pwm_r) / 255.0) * 1.5
+                v = 0.22
                 rx += v * math.cos(theta) * DT
                 ry += v * math.sin(theta) * DT
                 theta += omega * DT
-                gyro_total_yaw = math.degrees(theta)
 
         elif state == 'OBSTACLE_BACK':
             pwm_l, pwm_r = -SPEED_BACK, -SPEED_BACK
@@ -256,55 +265,52 @@ def generate_video_mpu6050():
                 kananBebas = (cmRF > AMBANG_TERBUKA)
                 kiriBebas  = (cmLF > AMBANG_TERBUKA)
 
+                nearest_cardinal = round(math.degrees(theta) / 90.0) * 90.0
+
                 if not kiriBebas and kananBebas:
                     turn_direction = 1  # Kanan 90°
-                    gyro_target_deg = 90.0
-                    action_text = "Keputusan: Belok Kanan tepat 90.0° via Gyro"
+                    turn_deg = 90.0
+                    action_text = "Belok Kanan tepat 90.0° via Gyro"
                     action_color = (220, 80, 255)
                 elif kiriBebas and not kananBebas:
                     turn_direction = -1  # Kiri 90°
-                    gyro_target_deg = 90.0
-                    action_text = "Keputusan: Belok Kiri tepat 90.0° via Gyro"
+                    turn_deg = 90.0
+                    action_text = "Belok Kiri tepat 90.0° via Gyro"
                     action_color = (80, 220, 255)
                 elif kiriBebas and kananBebas:
                     turn_direction = 1  # Simpang T: Belok Kanan 90°
-                    gyro_target_deg = 90.0
+                    turn_deg = 90.0
                     action_text = "Simpang T: Belok Kanan tepat 90.0° via Gyro"
                     action_color = (255, 200, 50)
                 else:
                     turn_direction = 1  # Buntu: Putar Balik 180°
-                    gyro_target_deg = 180.0
+                    turn_deg = 180.0
                     action_text = "JALAN BUNTU! Putar Balik 180.0° via Gyro"
                     action_color = (255, 80, 80)
 
+                target_heading_deg = (nearest_cardinal + turn_direction * turn_deg) % 360.0
                 state = 'OBSTACLE_TURN'
-                gyro_relative_yaw = 0.0
 
         elif state == 'OBSTACLE_TURN':
-            # Kontrol kecepatan belok cerdas: deselerasi di 15 derajat terakhir
-            sisa_sudut = gyro_target_deg - gyro_relative_yaw
-            current_turn_speed = SPEED_TURN_SLOW if sisa_sudut <= 15.0 else SPEED_TURN_FAST
+            current_deg = math.degrees(theta) % 360.0
+            diff = (target_heading_deg - current_deg + 180.0) % 360.0 - 180.0
 
-            turn_rate_rad = (current_turn_speed / 95.0) * 3.0
-            d_deg = math.degrees(turn_rate_rad * DT)
-
-            if gyro_relative_yaw + d_deg >= gyro_target_deg:
-                d_deg = gyro_target_deg - gyro_relative_yaw
-                gyro_relative_yaw = gyro_target_deg
-                theta += turn_direction * math.radians(d_deg)
+            if abs(diff) < 2.0:
+                theta = math.radians(target_heading_deg)
                 state = 'CLEAR_TURN'
                 state_timer = 0.20
-                action_text = f"Selesai Belok Gyro: {gyro_target_deg:.1f}° Tercapai Tepat!"
+                action_text = f"Selesai Belok Gyro: {target_heading_deg:.0f}° Tercapai Tepat!"
                 action_color = (100, 255, 100)
             else:
-                gyro_relative_yaw += d_deg
-                theta += turn_direction * math.radians(d_deg)
-                if turn_direction > 0:
+                current_turn_speed = SPEED_TURN_SLOW if abs(diff) <= 15.0 else SPEED_TURN_FAST
+                turn_rate = 3.0 if abs(diff) > 15.0 else 1.5
+                sign = 1.0 if diff > 0 else -1.0
+                theta += sign * turn_rate * DT
+
+                if sign > 0:
                     pwm_l, pwm_r = current_turn_speed, -current_turn_speed
                 else:
                     pwm_l, pwm_r = -current_turn_speed, current_turn_speed
-
-            gyro_total_yaw = math.degrees(theta)
 
         elif state == 'CLEAR_TURN':
             pwm_l, pwm_r = SPEED_NORMAL, SPEED_NORMAL
@@ -393,7 +399,7 @@ def generate_video_mpu6050():
 
         cv2.putText(frame, "WALL MAZE SOLVER ROBOT - EDISI GYROSCOPE MPU-6050 (GY-521)", (25, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2)
-        cv2.putText(frame, "Feedback Sudut Derajat Riil (Closed-Loop) | Heading Lock Maju Lurus | Anti-Overshoot", (25, 50),
+        cv2.putText(frame, "Cardinal Heading Lock | Belokan 90° & 180° Presisi Mutlak | Anti-Overshoot", (25, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 215, 240), 1)
 
         # Kartu Sensor Ultrasonik
@@ -412,12 +418,9 @@ def generate_video_mpu6050():
         # Kartu KHUSUS GYROSCOPE MPU-6050
         cv2.rectangle(frame, (430, 64), (580, 115), (30, 50, 65), -1)
         cv2.putText(frame, "MPU-6050 YAW", (440, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 230, 255), 1)
-        if state == 'OBSTACLE_TURN':
-            cv2.putText(frame, f"{gyro_relative_yaw:.1f}° / {gyro_target_deg:.0f}°", (440, 105),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 200), 2)
-        else:
-            cv2.putText(frame, f"{gyro_total_yaw % 360:.1f}°", (440, 105),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 230, 255), 2)
+        current_deg = math.degrees(theta) % 360.0
+        cv2.putText(frame, f"{current_deg:.1f}° / {target_heading_deg:.0f}°", (440, 105),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 200), 2)
 
         # Kartu Status Aksi
         cv2.rectangle(frame, (590, 64), (960, 115), (32, 38, 48), -1)

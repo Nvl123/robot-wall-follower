@@ -90,8 +90,9 @@ const bool PAKAI_TOMBOL_START   = false;
 bool ikutiKanan = IKUTI_KANAN_DEFAULT;
 
 // ======================== VARIABEL GYROSCOPE (MPU-6050) ========================
-float gyroZ_offset = 0.0;     // Nilai kalibrasi diam
-float yawAngle = 0.0;         // Sudut hadap akumulatif (derajat)
+float gyroZ_offset   = 0.0;    // Nilai kalibrasi diam
+float yawAngle       = 0.0;    // Sudut hadap kumulatif (derajat)
+float targetHeading  = 0.0;    // Arah hadap target lorong saat ini (0°, 90°, 180°, 270°)
 unsigned long prevGyroTime = 0;
 
 // ======================== FUNGSI MPU-6050 ========================
@@ -233,28 +234,24 @@ void rem() {
 }
 
 // ======================== MANUVER BELOK TERTUTUP (CLOSED-LOOP GYRO) ========================
-// Belok Kanan tepat targetDeg derajat menggunakan umpan balik Gyroscope Z
-void turnRightGyro(float targetDeg = 90.0) {
-  Serial.print(F("[GYRO] Belok Kanan Target: ")); Serial.print(targetDeg); Serial.println(F("°"));
+// Belok Kanan tepat targetDeg derajat dari target arah lorong
+void turnRightGyro(float deltaDeg = 90.0) {
+  targetHeading += deltaDeg;
+  Serial.print(F("[GYRO] Belok Kanan Menuju Heading: ")); Serial.print(targetHeading); Serial.println(F("°"));
   rem();
   delay(40);
-  resetYaw();
 
   unsigned long startTime = millis();
   while (true) {
     updateYaw();
-    // Putaran ke kanan menghasilkan nilai yaw negatif (atau positif tergantung orientasi)
-    float sudutTercapai = abs(yawAngle);
-
-    // Jika mendekati 15 derajat terakhir, perlambat putaran agar rem tepat sasaran
-    int currentSpeed = (sudutTercapai >= (targetDeg - 15.0)) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
-    setMotor(currentSpeed, -currentSpeed);
-
-    if (sudutTercapai >= targetDeg) {
+    float sisa = targetHeading - yawAngle;
+    if (sisa <= 0.5) {
       break;
     }
 
-    // Safety timeout: jika roda tersangkut > 2.5 detik, hentikan paksa
+    int currentSpeed = (sisa <= 15.0) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
+    setMotor(currentSpeed, -currentSpeed);
+
     if (millis() - startTime > 2500) {
       Serial.println(F("[GYRO] Timeout belok kanan!"));
       break;
@@ -264,27 +261,26 @@ void turnRightGyro(float targetDeg = 90.0) {
 
   rem();
   delay(50);
-  Serial.print(F("[GYRO] Sudut Akhir Kanan: ")); Serial.print(abs(yawAngle), 1); Serial.println(F("°"));
+  Serial.print(F("[GYRO] Sudut Akhir: ")); Serial.print(yawAngle, 1); Serial.println(F("°"));
 }
 
-// Belok Kiri tepat targetDeg derajat menggunakan umpan balik Gyroscope Z
-void turnLeftGyro(float targetDeg = 90.0) {
-  Serial.print(F("[GYRO] Belok Kiri Target: ")); Serial.print(targetDeg); Serial.println(F("°"));
+// Belok Kiri tepat targetDeg derajat dari target arah lorong
+void turnLeftGyro(float deltaDeg = 90.0) {
+  targetHeading -= deltaDeg;
+  Serial.print(F("[GYRO] Belok Kiri Menuju Heading: ")); Serial.print(targetHeading); Serial.println(F("°"));
   rem();
   delay(40);
-  resetYaw();
 
   unsigned long startTime = millis();
   while (true) {
     updateYaw();
-    float sudutTercapai = abs(yawAngle);
-
-    int currentSpeed = (sudutTercapai >= (targetDeg - 15.0)) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
-    setMotor(-currentSpeed, currentSpeed);
-
-    if (sudutTercapai >= targetDeg) {
+    float sisa = yawAngle - targetHeading;
+    if (sisa <= 0.5) {
       break;
     }
+
+    int currentSpeed = (sisa <= 15.0) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
+    setMotor(-currentSpeed, currentSpeed);
 
     if (millis() - startTime > 2500) {
       Serial.println(F("[GYRO] Timeout belok kiri!"));
@@ -295,7 +291,7 @@ void turnLeftGyro(float targetDeg = 90.0) {
 
   rem();
   delay(50);
-  Serial.print(F("[GYRO] Sudut Akhir Kiri: ")); Serial.print(abs(yawAngle), 1); Serial.println(F("°"));
+  Serial.print(F("[GYRO] Sudut Akhir: ")); Serial.print(yawAngle, 1); Serial.println(F("°"));
 }
 
 // Putar Balik 180° menggunakan umpan balik Gyroscope Z
@@ -403,16 +399,16 @@ void loop() {
     if (ikutiKanan) {
       // ===== LOGIKA PENELUSURAN DINDING KANAN =====
       if (cmRF >= AMBANG_DEKAT && cmRF <= AMBANG_JAUH) {
-        // Posisi ideal di tengah lorong: maju lurus terkunci heading
-        forward(SPEED_NORMAL, SPEED_NORMAL);
-        Serial.println(F(" -> Maju Lurus (Ideal ~12cm)"));
+        // Posisi ideal di tengah lorong: maju lurus terkunci heading Gyro
+        forwardWithHeadingLock(SPEED_NORMAL, targetHeading);
+        Serial.println(F(" -> Maju Lurus (Ideal + Heading Lock)"));
       }
       else if (cmRF > AMBANG_JAUH) {
         if (cmRF >= AMBANG_TERBUKA) {
           // Dinding kanan hilang (celah/simpang kanan): ikuti dinding kiri
           if (cmLF >= AMBANG_DEKAT && cmLF <= AMBANG_JAUH) {
-            forward(SPEED_NORMAL, SPEED_NORMAL);
-            Serial.println(F(" -> Maju Lurus (Pemandu Kiri)"));
+            forwardWithHeadingLock(SPEED_NORMAL, targetHeading);
+            Serial.println(F(" -> Maju Lurus (Pemandu Kiri + Heading Lock)"));
           }
           else if (cmLF > AMBANG_JAUH && cmLF < AMBANG_TERBUKA) {
             forward(SPEED_SLOW, SPEED_FAST);  // Serong ke kiri
@@ -423,7 +419,7 @@ void loop() {
             Serial.println(F(" -> Koreksi Kanan Halus"));
           }
           else {
-            forward(SPEED_NORMAL, SPEED_NORMAL);
+            forwardWithHeadingLock(SPEED_NORMAL, targetHeading);
             Serial.println(F(" -> Maju Lurus (Simpang Terbuka)"));
           }
         } else {
@@ -519,9 +515,8 @@ void loop() {
       turn180Gyro();
     }
 
-    // Maju sejenak menjauhi sudut setelah selesai berputar
-    resetYaw();
-    forward(SPEED_NORMAL, SPEED_NORMAL);
+    // Maju sejenak menjauhi sudut setelah selesai berputar dengan heading lock
+    forwardWithHeadingLock(SPEED_NORMAL, targetHeading);
     delay(200);
   }
 
