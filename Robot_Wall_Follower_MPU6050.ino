@@ -73,8 +73,8 @@ const float DEPAN_STOP     = 15.0;   // Berhenti saat jarak depan <= 15 cm
 const int SPEED_NORMAL     = 80;     // Kecepatan maju lurus
 const int SPEED_SLOW       = 70;     // Koreksi belok halus lambat
 const int SPEED_FAST       = 85;     // Koreksi belok halus cepat
-const int SPEED_TURN_FAST  = 90;     // Kecepatan putar awal
-const int SPEED_TURN_SLOW  = 72;     // Kecepatan putar saat mendekati target 90°
+const int SPEED_TURN_FAST  = 95;     // Kecepatan putar awal (bertenaga agar tidak tertahan gesekan ban)
+const int SPEED_TURN_SLOW  = 82;     // Kecepatan putar saat mendekati target 90° (cukup kuat tidak stall)
 const int SPEED_BACK       = 70;     // Kecepatan mundur memberi ruang putar
 
 // Trim Motor fisik (disesuaikan agar kedua roda seimbang)
@@ -82,9 +82,11 @@ const float TRIM_KIRI      = 0.89;
 const float TRIM_KANAN     = 1.00;
 
 // Parameter Presisi Belok Gyro & Fail-Safe Waktu
-const float ANTISIPASI_REM_DERAJAT = 2.5;  // Rem aktif 2.5° sebelum 90° untuk kompensasi inersia
-const unsigned long TURN_90_MS     = 250;  // Durasi cadangan 90° (ms) jika Gyro terlepas
-const unsigned long TURN_180_MS    = 500;  // Durasi cadangan 180° (ms) jika Gyro terlepas
+const float TARGET_BELOK_90        = 90.0; // Target sudut belok siku (derajat)
+const float TARGET_BELOK_180       = 180.0;// Target sudut putar balik (derajat)
+const float ANTISIPASI_REM_DERAJAT = 1.0;  // Rem aktif 1.0° sebelum target untuk kompensasi inersia
+const unsigned long TURN_90_MS     = 260;  // Durasi cadangan 90° (ms) jika Gyro terlepas
+const unsigned long TURN_180_MS    = 520;  // Durasi cadangan 180° (ms) jika Gyro terlepas
 
 // Opsi Aturan Dinding Utama:
 const bool IKUTI_KANAN_DEFAULT  = true;
@@ -101,8 +103,9 @@ float gyroZ_offset   = 0.0;    // Nilai kalibrasi diam (deg/s)
 float yawAngle       = 0.0;    // Sudut hadap kumulatif (derajat)
 unsigned long prevGyroTime = 0;
 
-// Skala sensitivitas untuk FS_SEL = 1 (+/- 500 deg/s) adalah 65.5 LSB/(deg/s)
-const float GYRO_SCALE = 65.5;
+// Skala sensitivitas standar MPU-6050 FS_SEL = 0 (+/- 250 deg/s) adalah 131.0 LSB/(deg/s)
+// (Menggunakan 131.0 memastikan pembacaan sudut 1:1 akurat dan tidak berhenti di 45°)
+const float GYRO_SCALE = 131.0;
 
 // ======================== FUNGSI MPU-6050 ========================
 bool cekAlamatI2C(int addr) {
@@ -135,24 +138,24 @@ void initMPU6050() {
     mpuDitemukan = false;
     Serial.println(F("[GYRO ERROR] MPU-6050 TIDAK TERDETEKSI di 0x68 maupun 0x69!"));
     Serial.println(F("-> Periksa kabel VCC (5V), GND, SDA (A4), SCL (A5)."));
-    Serial.println(F("-> Robot otomatis menggunakan mode belok waktu cadangan (250ms)."));
+    Serial.println(F("-> Robot otomatis menggunakan mode belok waktu cadangan."));
     return;
   }
 
   Serial.print(F("[GYRO] MPU-6050 Terdeteksi Normal di alamat 0x"));
   Serial.println(mpuAddr, HEX);
 
-  // 1. Bangunkan MPU-6050 dari mode sleep (Register 0x6B PWR_MGMT_1 = 0x01 PLL X-axis gyro ref)
-  tulisRegisterMPU(0x6B, 0x01);
+  // 1. Bangunkan MPU-6050 dari mode sleep (Register 0x6B PWR_MGMT_1 = 0x00)
+  tulisRegisterMPU(0x6B, 0x00);
   delay(50);
 
   // 2. Aktifkan Digital Low-Pass Filter (DLPF) 44Hz (Register 0x1A CONFIG = 0x03)
   //    Meredam getaran mekanis dari gearbox motor dan roda
   tulisRegisterMPU(0x1A, 0x03);
 
-  // 3. Set rentang Gyroscope ke +/- 500 deg/s (Register 0x1B GYRO_CONFIG = 0x08)
-  //    Mencegah saturasi (clipping) saat robot berputar cepat (> 250 deg/s)
-  tulisRegisterMPU(0x1B, 0x08);
+  // 3. Set rentang Gyroscope standar +/- 250 deg/s (Register 0x1B GYRO_CONFIG = 0x00)
+  //    Kompatibel 100% dengan semua chip GY-521 (skala 131.0 LSB/deg/s)
+  tulisRegisterMPU(0x1B, 0x00);
 
   delay(50);
 }
@@ -364,9 +367,11 @@ void eksekusiPutarGyro(int arahPutar, float targetDeg) {
   float startYaw = yawAngle;
   unsigned long startTime = millis();
 
-  float batasBerhenti = max(5.0f, targetDeg - ANTISIPASI_REM_DERAJAT);
-  float batasLambat   = max(5.0f, targetDeg - 20.0f);
-  unsigned long timeoutMax = (targetDeg > 100.0) ? 1300 : 750;
+  float selisihRem    = targetDeg - ANTISIPASI_REM_DERAJAT;
+  float selisihLambat = targetDeg - 12.0f;
+  float batasBerhenti = (selisihRem > 5.0f) ? selisihRem : 5.0f;
+  float batasLambat   = (selisihLambat > 5.0f) ? selisihLambat : 5.0f;
+  unsigned long timeoutMax = (targetDeg > 100.0) ? 2200 : 1200;
 
   while (true) {
     updateYaw();
@@ -378,11 +383,10 @@ void eksekusiPutarGyro(int arahPutar, float targetDeg) {
       break;
     }
 
-    // 2. Proteksi Fail-Safe: Jika sudah berjalan sepanjang waktu belok normal (250ms)
-    //    tapi bacaan Gyro tidak bergerak (< 3 derajat, misal kabel SDA/SCL kendor),
-    //    langsung hentikan tepat waktu agar robot tidak pernah muter-muter!
-    if (elapsed >= fallbackMs && rotated < 3.0) {
-      Serial.println(F("[GYRO FAIL-SAFE] Sinyal sudut tidak berubah, berhenti tepat di waktu cadangan!"));
+    // 2. Proteksi Fail-Safe: Jika sudah 350ms tapi bacaan Gyro sama sekali tidak bergerak
+    //    (< 2 derajat, misal kabel SDA/SCL terlepas di tengah jalan), hentikan aman!
+    if (elapsed >= 350 && rotated < 2.0) {
+      Serial.println(F("[GYRO FAIL-SAFE] Sinyal sudut tidak berubah, berhenti aman!"));
       break;
     }
 
@@ -392,7 +396,7 @@ void eksekusiPutarGyro(int arahPutar, float targetDeg) {
       break;
     }
 
-    // Deselerasi bertahap saat mendekati target 20° terakhir
+    // Deselerasi bertahap saat mendekati target 12° terakhir
     int spd = (rotated >= batasLambat) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
     setMotor(arahPutar * spd, -arahPutar * spd);
 
@@ -407,12 +411,12 @@ void eksekusiPutarGyro(int arahPutar, float targetDeg) {
   Serial.println(F("°"));
 }
 
-void turnRightGyro(float deltaDeg = 90.0) {
+void turnRightGyro(float deltaDeg = TARGET_BELOK_90) {
   Serial.print(F("[GYRO] Belok Kanan ")); Serial.print(deltaDeg, 0); Serial.println(F("°"));
   eksekusiPutarGyro(1, deltaDeg);
 }
 
-void turnLeftGyro(float deltaDeg = 90.0) {
+void turnLeftGyro(float deltaDeg = TARGET_BELOK_90) {
   Serial.print(F("[GYRO] Belok Kiri ")); Serial.print(deltaDeg, 0); Serial.println(F("°"));
   eksekusiPutarGyro(-1, deltaDeg);
 }
@@ -420,9 +424,9 @@ void turnLeftGyro(float deltaDeg = 90.0) {
 void turn180Gyro() {
   Serial.println(F("[GYRO] Putar Balik 180°"));
   if (ikutiKanan) {
-    eksekusiPutarGyro(1, 180.0);
+    eksekusiPutarGyro(1, TARGET_BELOK_180);
   } else {
-    eksekusiPutarGyro(-1, 180.0);
+    eksekusiPutarGyro(-1, TARGET_BELOK_180);
   }
 }
 
@@ -650,18 +654,18 @@ void loop() {
     // 4. Eksekusi keputusan belok dengan Gyroscope
     // Kasus 1: Kiri tertutup, Kanan terbuka -> Belok Kanan 90°
     if (!kiriBebas && kananBebas) {
-      turnRightGyro(90.0);
+      turnRightGyro(TARGET_BELOK_90);
     }
     // Kasus 2: Kiri terbuka, Kanan tertutup -> Belok Kiri 90°
     else if (kiriBebas && !kananBebas) {
-      turnLeftGyro(90.0);
+      turnLeftGyro(TARGET_BELOK_90);
     }
     // Kasus 3: Simpang T (Kedua sisi terbuka) -> Sesuai aturan dinding
     else if (kiriBebas && kananBebas) {
       if (ikutiKanan) {
-        turnRightGyro(90.0);
+        turnRightGyro(TARGET_BELOK_90);
       } else {
-        turnLeftGyro(90.0);
+        turnLeftGyro(TARGET_BELOK_90);
       }
     }
     // Kasus 4: Jalan Buntu (Kedua sisi tertutup) -> Putar Balik 180°
