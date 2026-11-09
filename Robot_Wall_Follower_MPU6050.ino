@@ -1,24 +1,28 @@
 /*
   =============================================================================
-  WALL MAZE SOLVER ROBOT - MPU-6050 (GY-521) GYROSCOPE EDITION
+  WALL MAZE SOLVER ROBOT - MPU-6050 (GY-521) GYROSCOPE EDITION (OPTIMIZED)
   Arduino UNO + L298N + 3x HC-SR04 + MPU-6050 (I2C)
   =============================================================================
-  Pembaruan Utama dengan Sensor Gyroscope GY-521 (MPU-6050):
-  1. BELOK 90° & 180° CLOSED-LOOP MUTLAK:
-     - Tidak lagi mengandalkan tebak-tebakan milidetik delay(ms).
-     - Robot berputar membaca sudut rotasi derajat nyata dari sensor Gyro (Sumbu Z/Yaw).
-     - Dilengkapi deselerasi cerdas: saat sudut mendekati 75°, kecepatan putar
-       melambat perlahan sehingga pengereman di 90.0° pas tanpa overshoot/kebablasan.
-  2. HEADING LOCK (STABILISASI MAJU LURUS):
-     - Masalah roda cenderung belok ke kiri teratasi otomatis.
-     - Gyro mendeteksi deviasi sudut saat maju lurus dan langsung melakukan
-       mikro-koreksi agar robot meluncur lurus sempurna seperti di atas rel.
-  3. KOMUNIKASI I2C MURNI (Wire.h):
-     - Tidak membutuhkan instalasi library eksternal tambahan.
-     - Cukup hubungkan 4 kabel: VCC->5V, GND->GND, SDA->Pin A4, SCL->Pin A5.
-  4. KALIBRASI OTOMATIS SAAT STARTUP:
-     - Saat robot pertama kali dinyalakan (2 detik awal), gyro mengukur offset
-       bias nol secara otomatis saat robot diam.
+  Fitur & Optimasi Utama:
+  1. BELOK 90° & 180° CLOSED-LOOP ABSOLUT (ANTI MUTER-MUTER):
+     - Menggunakan perubahan sudut absolut |yawAngle - startYaw| sehingga kebal
+       terhadap inversi tanda (+/-) maupun orientasi pemasangan sensor.
+     - Dilengkapi deselerasi bertahap (melambat 20° sebelum target) dan kompensasi
+       inersia pengereman (ANTISIPASI_REM_DERAJAT) agar berhenti tepat di 90.0°.
+     - Proteksi Ganda (Fail-Safe): Jika sensor Gyro lepas atau roda tertahan,
+       otomatis berhenti sesuai durasi waktu terkalibrasi (250 ms) sehingga
+       robot TIDAK AKAN PERNAH berputar-putar tanpa henti.
+  2. FILTER HARDWARE DLPF 44Hz & RENTANG +/- 500 DEG/S:
+     - Mengaktifkan Digital Low-Pass Filter internal MPU-6050 (Register 0x1A)
+       untuk meredam getaran mekanis motor DC dan sasis.
+     - Rentang pengukuran dinaikkan ke +/- 500 deg/s agar sensor tidak mengalami
+       saturasi (clipping) saat robot berputar cepat.
+  3. KALIBRASI CERDAS DETEKSI DIAM (AUTO-STATIONARY CALIBRATION):
+     - Saat dinyalakan, robot menunggu hingga benar-benar diletakkan diam di
+       lantai sebelum mengunci titik nol Gyro (mencegah error akibat goyangan
+       tangan saat menekan tombol saklar ON).
+  4. PROTEKSI ANTI-LONJAKAN INTEGRASI WAKTU (DT CLAMPING):
+     - Mencegah lonjakan sudut palsu setelah jeda delay() panjang.
   =============================================================================
 */
 
@@ -26,7 +30,7 @@
 
 // ======================== PILIH MODE ========================
 // 0: Normal Maze Solver (Gyro Aktif)
-// 1: Tes Sensor Ultrasonik (Serial Monitor @115200, motor mati)
+// 1: Tes Sensor Ultrasonik & Gyro (Serial Monitor @115200, motor mati)
 // 2: Tes Belok Gyro 90° & 180° (Uji presisi sudut di Serial Monitor)
 // 3: Tes Maju Lurus Gyro (Uji Heading Lock)
 const int MODE_OPERASI = 0;
@@ -50,11 +54,6 @@ const int ECHO_DEPAN = 4;
 const int TRIG_KIRI  = 7;
 const int ECHO_KIRI  = 6;
 
-// I2C Pin MPU-6050 (Hardware Arduino Uno):
-// SDA = Pin A4
-// SCL = Pin A5
-const int MPU_ADDR = 0x68;  // Alamat I2C default GY-521
-
 // Pin Opsional (INPUT_PULLUP):
 const int PIN_JUMPER_DINDING = A0;  // LOW = Dinding KIRI, HIGH = KANAN
 const int PIN_TOMBOL_START   = A1;  // Tekan untuk mulai
@@ -70,17 +69,22 @@ const float AMBANG_JAUH    = 13.0;   // > 13 cm: mulai menjauhi dinding
 const float AMBANG_TERBUKA = 22.0;   // > 22 cm: dinding hilang / simpangan
 const float DEPAN_STOP     = 15.0;   // Berhenti saat jarak depan <= 15 cm
 
-// ======================== KECEPATAN MOTOR ========================
+// ======================== KECEPATAN & KALIBRASI MOTOR ========================
 const int SPEED_NORMAL     = 80;     // Kecepatan maju lurus
 const int SPEED_SLOW       = 70;     // Koreksi belok halus lambat
 const int SPEED_FAST       = 85;     // Koreksi belok halus cepat
-const int SPEED_TURN_FAST  = 95;     // Kecepatan putar awal
-const int SPEED_TURN_SLOW  = 75;     // Kecepatan putar mendekati target sudut (anti-overshoot)
-const int SPEED_BACK       = 70;     // Kecepatan mundur sedikit sebelum belok
+const int SPEED_TURN_FAST  = 90;     // Kecepatan putar awal
+const int SPEED_TURN_SLOW  = 72;     // Kecepatan putar saat mendekati target 90°
+const int SPEED_BACK       = 70;     // Kecepatan mundur memberi ruang putar
 
-// Trim Motor fisik
-const float TRIM_KIRI      = 0.89;   // Disesuaikan dengan fisik motor Anda
+// Trim Motor fisik (disesuaikan agar kedua roda seimbang)
+const float TRIM_KIRI      = 0.89;
 const float TRIM_KANAN     = 1.00;
+
+// Parameter Presisi Belok Gyro & Fail-Safe Waktu
+const float ANTISIPASI_REM_DERAJAT = 2.5;  // Rem aktif 2.5° sebelum 90° untuk kompensasi inersia
+const unsigned long TURN_90_MS     = 250;  // Durasi cadangan 90° (ms) jika Gyro terlepas
+const unsigned long TURN_180_MS    = 500;  // Durasi cadangan 180° (ms) jika Gyro terlepas
 
 // Opsi Aturan Dinding Utama:
 const bool IKUTI_KANAN_DEFAULT  = true;
@@ -90,104 +94,170 @@ const bool PAKAI_TOMBOL_START   = false;
 bool ikutiKanan = IKUTI_KANAN_DEFAULT;
 
 // ======================== VARIABEL GYROSCOPE (MPU-6050) ========================
-const int WAKTU_BELOK_90 = 420;    // Waktu cadangan jika sensor Gyro terlepas (ms)
-bool mpuDitemukan    = false;  // Status deteksi sensor
-float gyroZ_offset   = 0.0;    // Nilai kalibrasi diam
+// I2C Pin MPU-6050 pada Arduino Uno: SDA = Pin A4, SCL = Pin A5
+int   mpuAddr        = 0x68;   // Alamat I2C (otomatis cek 0x68 dan 0x69)
+bool  mpuDitemukan   = false;  // Status deteksi sensor
+float gyroZ_offset   = 0.0;    // Nilai kalibrasi diam (deg/s)
 float yawAngle       = 0.0;    // Sudut hadap kumulatif (derajat)
-float targetHeading  = 0.0;    // Arah hadap target lorong saat ini (0°, 90°, 180°, 270°)
 unsigned long prevGyroTime = 0;
 
+// Skala sensitivitas untuk FS_SEL = 1 (+/- 500 deg/s) adalah 65.5 LSB/(deg/s)
+const float GYRO_SCALE = 65.5;
+
 // ======================== FUNGSI MPU-6050 ========================
-void initMPU6050() {
-  Wire.begin();
-
-  // Tes apakah MPU-6050 merespon di alamat 0x68
-  Wire.beginTransmission(MPU_ADDR);
-  byte err = Wire.endTransmission();
-
-  if (err != 0) {
-    mpuDitemukan = false;
-    Serial.print(F("[GYRO ERROR] MPU-6050 TIDAK MERESPON di alamat 0x68! Kode Error: "));
-    Serial.println(err);
-    Serial.println(F("Periksa kabel: VCC (5V), GND, SDA (A4), SCL (A5). Robot beralih ke mode waktu cadangan."));
-    return;
-  }
-
-  mpuDitemukan = true;
-  Serial.println(F("[GYRO] MPU-6050 Terdeteksi Normal di alamat 0x68 (OK)"));
-
-  // Bangunkan MPU-6050 dari mode sleep (Register PWR_MGMT_1)
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x6B);
-  Wire.write(0x00);
-  Wire.endTransmission(true);
-
-  // Set sensitivitas Gyroscope ke +/- 250 deg/s (FS_SEL = 0)
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x1B);
-  Wire.write(0x00);
-  Wire.endTransmission(true);
-
-  delay(100);
+bool cekAlamatI2C(int addr) {
+  Wire.beginTransmission(addr);
+  return (Wire.endTransmission() == 0);
 }
 
-// Kalibrasi otomatis gyro saat robot diam
-void kalibrasiGyro() {
-  if (!mpuDitemukan) {
-    Serial.println(F("[GYRO] Melewati kalibrasi karena MPU-6050 tidak terdeteksi."));
+void tulisRegisterMPU(byte reg, byte val) {
+  Wire.beginTransmission(mpuAddr);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission(true);
+}
+
+void initMPU6050() {
+  Wire.begin();
+  #if defined(WIRE_HAS_TIMEOUT)
+    // Mencegah jalur I2C nge-freeze jika ada interferensi elektrik motor DC
+    Wire.setWireTimeout(3000, true);
+  #endif
+
+  // Deteksi otomatis alamat I2C MPU-6050 (0x68 jika AD0=LOW, 0x69 jika AD0=HIGH)
+  if (cekAlamatI2C(0x68)) {
+    mpuAddr = 0x68;
+    mpuDitemukan = true;
+  } else if (cekAlamatI2C(0x69)) {
+    mpuAddr = 0x69;
+    mpuDitemukan = true;
+  } else {
+    mpuDitemukan = false;
+    Serial.println(F("[GYRO ERROR] MPU-6050 TIDAK TERDETEKSI di 0x68 maupun 0x69!"));
+    Serial.println(F("-> Periksa kabel VCC (5V), GND, SDA (A4), SCL (A5)."));
+    Serial.println(F("-> Robot otomatis menggunakan mode belok waktu cadangan (250ms)."));
     return;
   }
 
-  Serial.println(F("\n[GYRO] Memulai kalibrasi offset... JANGAN GERAKKAN ROBOT!"));
-  long sumZ = 0;
-  const int NUM_SAMPLES = 400;
+  Serial.print(F("[GYRO] MPU-6050 Terdeteksi Normal di alamat 0x"));
+  Serial.println(mpuAddr, HEX);
 
-  for (int i = 0; i < NUM_SAMPLES; i++) {
-    Wire.beginTransmission(MPU_ADDR);
-    Wire.write(0x47);  // Register GYRO_ZOUT_H
-    Wire.endTransmission(false);
-    Wire.requestFrom(MPU_ADDR, 2, true);
+  // 1. Bangunkan MPU-6050 dari mode sleep (Register 0x6B PWR_MGMT_1 = 0x01 PLL X-axis gyro ref)
+  tulisRegisterMPU(0x6B, 0x01);
+  delay(50);
 
-    if (Wire.available() >= 2) {
-      int16_t rawZ = (Wire.read() << 8) | Wire.read();
-      sumZ += rawZ;
-    }
-    delay(4);
+  // 2. Aktifkan Digital Low-Pass Filter (DLPF) 44Hz (Register 0x1A CONFIG = 0x03)
+  //    Meredam getaran mekanis dari gearbox motor dan roda
+  tulisRegisterMPU(0x1A, 0x03);
+
+  // 3. Set rentang Gyroscope ke +/- 500 deg/s (Register 0x1B GYRO_CONFIG = 0x08)
+  //    Mencegah saturasi (clipping) saat robot berputar cepat (> 250 deg/s)
+  tulisRegisterMPU(0x1B, 0x08);
+
+  delay(50);
+}
+
+bool bacaRawGyroZ(int16_t &rawZ) {
+  if (!mpuDitemukan) return false;
+
+  Wire.beginTransmission(mpuAddr);
+  Wire.write(0x47);  // Register GYRO_ZOUT_H
+  if (Wire.endTransmission(false) != 0) {
+    return false;
   }
 
-  // Sensitivitas +/- 250 deg/s adalah 131.0 LSB/(deg/s)
-  gyroZ_offset = (float)sumZ / (float)NUM_SAMPLES / 131.0;
+  byte count = Wire.requestFrom(mpuAddr, 2, true);
+  if (count >= 2 && Wire.available() >= 2) {
+    rawZ = (int16_t)((Wire.read() << 8) | Wire.read());
+    return true;
+  }
+  return false;
+}
+
+// Kalibrasi otomatis dengan deteksi diam (menunggu tangan lepas dari saklar)
+void kalibrasiGyro() {
+  if (!mpuDitemukan) return;
+
+  Serial.println(F("\n[GYRO] Persiapan kalibrasi... Letakkan robot dalam keadaan DIAM."));
+  delay(800);  // Beri waktu 0.8 detik setelah saklar ON ditekan
+
+  // Tunggu sampai robot benar-benar diam (variasi pembacaan rendah)
+  for (int percobaan = 0; percobaan < 15; percobaan++) {
+    int16_t minVal = 32767;
+    int16_t maxVal = -32768;
+    bool valid = true;
+
+    for (int i = 0; i < 40; i++) {
+      int16_t rZ = 0;
+      if (bacaRawGyroZ(rZ)) {
+        if (rZ < minVal) minVal = rZ;
+        if (rZ > maxVal) maxVal = rZ;
+      } else {
+        valid = false;
+      }
+      delay(4);
+    }
+
+    // Jika selisih max-min < 350 LSB (~5.3 deg/s), berarti robot sudah diam di lantai
+    if (valid && (maxVal - minVal < 350)) {
+      break;
+    }
+    Serial.println(F("[GYRO] Robot terdeteksi masih bergerak, menunggu diam..."));
+  }
+
+  Serial.println(F("[GYRO] Mengukur offset titik nol... JANGAN GERAKKAN ROBOT!"));
+  long sumZ = 0;
+  int sampelBerhasil = 0;
+  const int TARGET_SAMPEL = 300;
+
+  for (int i = 0; i < TARGET_SAMPEL; i++) {
+    int16_t rawZ = 0;
+    if (bacaRawGyroZ(rawZ)) {
+      sumZ += rawZ;
+      sampelBerhasil++;
+    }
+    delay(3);
+  }
+
+  if (sampelBerhasil > 50) {
+    gyroZ_offset = ((float)sumZ / (float)sampelBerhasil) / GYRO_SCALE;
+    Serial.print(F("[GYRO] Kalibrasi Selesai! Offset Z: "));
+    Serial.print(gyroZ_offset, 3);
+    Serial.println(F(" deg/s"));
+  } else {
+    mpuDitemukan = false;
+    Serial.println(F("[GYRO ERROR] Pembacaan data gagal saat kalibrasi! Beralih ke mode waktu."));
+  }
+
   yawAngle = 0.0;
   prevGyroTime = micros();
-
-  Serial.print(F("[GYRO] Kalibrasi Selesai! Offset Z: "));
-  Serial.println(gyroZ_offset, 4);
 }
 
 // Membaca laju putar sumbu Z (deg/s)
 float bacaGyroRateZ() {
-  if (!mpuDitemukan) return 0.0;
-
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x47);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 2, true);
-
-  if (Wire.available() >= 2) {
-    int16_t rawZ = (Wire.read() << 8) | Wire.read();
-    float rateZ = ((float)rawZ / 131.0) - gyroZ_offset;
-    // Deadzone filter untuk noise getaran halus (< 0.20 deg/s diabaikan)
-    if (abs(rateZ) < 0.20) rateZ = 0.0;
+  int16_t rawZ = 0;
+  if (bacaRawGyroZ(rawZ)) {
+    float rateZ = ((float)rawZ / GYRO_SCALE) - gyroZ_offset;
+    // Deadzone filter untuk mengabaikan derau statis (< 0.25 deg/s)
+    if (abs(rateZ) < 0.25) rateZ = 0.0;
     return rateZ;
   }
   return 0.0;
 }
 
-// Memperbarui akumulasi sudut yaw
+// Memperbarui akumulasi sudut yaw dengan pengaman dt
 void updateYaw() {
+  if (!mpuDitemukan) return;
+
   unsigned long now = micros();
   float dt = (now - prevGyroTime) / 1000000.0;
   prevGyroTime = now;
+
+  // Pengaman: Jika jeda antar pemanggilan > 50ms (misal sehabis fungsi baca sensor/delay),
+  // jangan kalikan dengan dt besar agar tidak menimbulkan lonjakan sudut palsu
+  if (dt > 0.05 || dt <= 0.0) {
+    return;
+  }
 
   float rateZ = bacaGyroRateZ();
   yawAngle += rateZ * dt;
@@ -196,6 +266,15 @@ void updateYaw() {
 void resetYaw() {
   yawAngle = 0.0;
   prevGyroTime = micros();
+}
+
+// Fungsi pengganti delay() yang tetap memantau Gyro secara kontinu setiap 2ms
+void delayWithGyro(unsigned long durasiMs) {
+  unsigned long start = millis();
+  while (millis() - start < durasiMs) {
+    updateYaw();
+    delay(2);
+  }
 }
 
 // ======================== FUNGSI SENSOR ULTRASONIK ========================
@@ -250,126 +329,106 @@ void back(int l, int r) {
 
 void stopRobot(int delayMs = 0) {
   setMotor(0, 0);
-  if (delayMs > 0) delay(delayMs);
+  if (delayMs > 0) delayWithGyro(delayMs);
 }
 
 void rem() {
   digitalWrite(IN1, HIGH); digitalWrite(IN2, HIGH);
   digitalWrite(IN3, HIGH); digitalWrite(IN4, HIGH);
   analogWrite(ENA, 255);   analogWrite(ENB, 255);
-  delay(35);
+  delayWithGyro(35);
   stopRobot(0);
 }
 
-// ======================== MANUVER BELOK TERTUTUP (CLOSED-LOOP GYRO) ========================
-// Belok Kanan tepat deltaDeg derajat via pembacaan perubahan sudut Gyroscope
+// ======================== MANUVER BELOK CLOSED-LOOP GYRO ========================
+// Fungsi internal eksekusi putaran presisi dengan proteksi ganda
+void eksekusiPutarGyro(int arahPutar, float targetDeg) {
+  // arahPutar: +1 = Belok Kanan (kiri maju, kanan mundur)
+  //            -1 = Belok Kiri  (kiri mundur, kanan maju)
+  unsigned long fallbackMs = (unsigned long)(TURN_90_MS * (targetDeg / 90.0));
+
+  if (!mpuDitemukan) {
+    Serial.println(F("[FALLBACK] Belok menggunakan waktu terkalibrasi..."));
+    setMotor(arahPutar * SPEED_TURN_FAST, -arahPutar * SPEED_TURN_FAST);
+    delay(fallbackMs);
+    rem();
+    delay(50);
+    return;
+  }
+
+  rem();
+  delayWithGyro(40);
+
+  // Reset timer integrasi tepat sebelum motor berputar
+  prevGyroTime = micros();
+  float startYaw = yawAngle;
+  unsigned long startTime = millis();
+
+  float batasBerhenti = max(5.0f, targetDeg - ANTISIPASI_REM_DERAJAT);
+  float batasLambat   = max(5.0f, targetDeg - 20.0f);
+  unsigned long timeoutMax = (targetDeg > 100.0) ? 1300 : 750;
+
+  while (true) {
+    updateYaw();
+    float rotated = abs(yawAngle - startYaw);
+    unsigned long elapsed = millis() - startTime;
+
+    // 1. Target sudut tercapai -> langsung rem!
+    if (rotated >= batasBerhenti) {
+      break;
+    }
+
+    // 2. Proteksi Fail-Safe: Jika sudah berjalan sepanjang waktu belok normal (250ms)
+    //    tapi bacaan Gyro tidak bergerak (< 3 derajat, misal kabel SDA/SCL kendor),
+    //    langsung hentikan tepat waktu agar robot tidak pernah muter-muter!
+    if (elapsed >= fallbackMs && rotated < 3.0) {
+      Serial.println(F("[GYRO FAIL-SAFE] Sinyal sudut tidak berubah, berhenti tepat di waktu cadangan!"));
+      break;
+    }
+
+    // 3. Batas waktu maksimum keamanan
+    if (elapsed >= timeoutMax) {
+      Serial.println(F("[GYRO] Batas waktu putar tercapai!"));
+      break;
+    }
+
+    // Deselerasi bertahap saat mendekati target 20° terakhir
+    int spd = (rotated >= batasLambat) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
+    setMotor(arahPutar * spd, -arahPutar * spd);
+
+    delay(2);
+  }
+
+  rem();
+  delayWithGyro(50);  // Tetap pantau sudut selama inersia berhenti
+
+  Serial.print(F("[GYRO] Selesai Belok. Total Rotasi Terukur: "));
+  Serial.print(abs(yawAngle - startYaw), 1);
+  Serial.println(F("°"));
+}
+
 void turnRightGyro(float deltaDeg = 90.0) {
-  if (!mpuDitemukan) {
-    Serial.println(F("[FALLBACK] Gyro tidak aktif, belok kanan berbasis waktu cadangan!"));
-    setMotor(SPEED_TURN_FAST, -SPEED_TURN_FAST);
-    delay((int)(WAKTU_BELOK_90 * (deltaDeg / 90.0)));
-    rem();
-    return;
-  }
-
-  rem();
-  delay(40);
-
-  float startYaw = yawAngle;
-  unsigned long startTime = millis();
-  Serial.print(F("[GYRO] Belok Kanan ")); Serial.print(deltaDeg, 0); Serial.println(F("°..."));
-
-  while (true) {
-    updateYaw();
-    // Gunakan delta absolut rotasi: kebal terhadap tanda (+/-) sensor
-    float rotated = abs(yawAngle - startYaw);
-
-    // Berhenti saat mencapai target (toleransi pengereman 2.0°)
-    if (rotated >= (deltaDeg - 2.0)) {
-      break;
-    }
-
-    // Melambat di 15° terakhir untuk menghindari overshoot dan roda selip
-    int currentSpeed = (rotated >= (deltaDeg - 15.0)) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
-    setMotor(currentSpeed, -currentSpeed);
-
-    // Pengaman timeout: 1.3 detik untuk 90°, 2.2 detik untuk 180°
-    unsigned long timeoutMs = (deltaDeg > 100.0) ? 2200 : 1300;
-    if (millis() - startTime > timeoutMs) {
-      Serial.println(F("[GYRO] Timeout Belok Kanan!"));
-      break;
-    }
-    delay(2);
-  }
-
-  rem();
-  targetHeading -= deltaDeg;
-  delay(50);
-  Serial.print(F("[GYRO] Selesai Kanan. Total Putaran: ")); 
-  Serial.print(abs(yawAngle - startYaw), 1); 
-  Serial.println(F("°"));
+  Serial.print(F("[GYRO] Belok Kanan ")); Serial.print(deltaDeg, 0); Serial.println(F("°"));
+  eksekusiPutarGyro(1, deltaDeg);
 }
 
-// Belok Kiri tepat deltaDeg derajat via pembacaan perubahan sudut Gyroscope
 void turnLeftGyro(float deltaDeg = 90.0) {
-  if (!mpuDitemukan) {
-    Serial.println(F("[FALLBACK] Gyro tidak aktif, belok kiri berbasis waktu cadangan!"));
-    setMotor(-SPEED_TURN_FAST, SPEED_TURN_FAST);
-    delay((int)(WAKTU_BELOK_90 * (deltaDeg / 90.0)));
-    rem();
-    return;
-  }
-
-  rem();
-  delay(40);
-
-  float startYaw = yawAngle;
-  unsigned long startTime = millis();
-  Serial.print(F("[GYRO] Belok Kiri ")); Serial.print(deltaDeg, 0); Serial.println(F("°..."));
-
-  while (true) {
-    updateYaw();
-    // Gunakan delta absolut rotasi: kebal terhadap tanda (+/-) sensor
-    float rotated = abs(yawAngle - startYaw);
-
-    // Berhenti saat mencapai target (toleransi pengereman 2.0°)
-    if (rotated >= (deltaDeg - 2.0)) {
-      break;
-    }
-
-    // Melambat di 15° terakhir untuk menghindari overshoot dan roda selip
-    int currentSpeed = (rotated >= (deltaDeg - 15.0)) ? SPEED_TURN_SLOW : SPEED_TURN_FAST;
-    setMotor(-currentSpeed, currentSpeed);
-
-    // Pengaman timeout: 1.3 detik untuk 90°, 2.2 detik untuk 180°
-    unsigned long timeoutMs = (deltaDeg > 100.0) ? 2200 : 1300;
-    if (millis() - startTime > timeoutMs) {
-      Serial.println(F("[GYRO] Timeout Belok Kiri!"));
-      break;
-    }
-    delay(2);
-  }
-
-  rem();
-  targetHeading += deltaDeg;
-  delay(50);
-  Serial.print(F("[GYRO] Selesai Kiri. Total Putaran: ")); 
-  Serial.print(abs(yawAngle - startYaw), 1); 
-  Serial.println(F("°"));
+  Serial.print(F("[GYRO] Belok Kiri ")); Serial.print(deltaDeg, 0); Serial.println(F("°"));
+  eksekusiPutarGyro(-1, deltaDeg);
 }
 
-// Putar Balik 180° menggunakan umpan balik Gyroscope Z
 void turn180Gyro() {
   Serial.println(F("[GYRO] Putar Balik 180°"));
   if (ikutiKanan) {
-    turnRightGyro(180.0);
+    eksekusiPutarGyro(1, 180.0);
   } else {
-    turnLeftGyro(180.0);
+    eksekusiPutarGyro(-1, 180.0);
   }
 }
 
 // ======================== MAJU LURUS TERKUNCI (HEADING LOCK) ========================
-// Menjaga robot meluncur benar-benar lurus dengan kompensasi sudut Gyro
+// Digunakan untuk Mode 3 (Uji jalan lurus terbuka dengan kompensasi Gyro)
+// Catatan: Pada MPU-6050, serong kanan membuat yawAngle negatif, serong kiri membuat positif.
 void forwardWithHeadingLock(int baseSpeed, float targetHeading = 0.0) {
   if (!mpuDitemukan) {
     forward(baseSpeed, baseSpeed);
@@ -378,14 +437,15 @@ void forwardWithHeadingLock(int baseSpeed, float targetHeading = 0.0) {
   updateYaw();
   float errorAngle = yawAngle - targetHeading;
 
-  // Gain koreksi heading (proporsional)
-  float kP_gyro = 2.0;
-  int koreksi = (int)(errorAngle * kP_gyro);
+  // Jika errorAngle positif (serong ke kiri) -> tambah roda kiri, kurangi roda kanan
+  // Jika errorAngle negatif (serong ke kanan) -> kurangi roda kiri, tambah roda kanan
+  float kP_gyro = 1.8;
+  int koreksi = constrain((int)(errorAngle * kP_gyro), -20, 20);
 
-  int pwmKiri  = baseSpeed - koreksi;
-  int pwmKanan = baseSpeed + koreksi;
+  int pwmKiri  = baseSpeed + koreksi;
+  int pwmKanan = baseSpeed - koreksi;
 
-  setMotor(constrain(pwmKiri, 65, 110), constrain(pwmKanan, 65, 110));
+  setMotor(constrain(pwmKiri, 65, 105), constrain(pwmKanan, 65, 105));
 }
 
 // ======================== SETUP ========================
@@ -395,6 +455,7 @@ void setup() {
   // Pin Motor
   pinMode(ENA, OUTPUT); pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
   pinMode(ENB, OUTPUT); pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  stopRobot(0);
 
   // Pin Ultrasonik
   pinMode(TRIG_KANAN, OUTPUT); pinMode(ECHO_KANAN, INPUT);
@@ -412,11 +473,10 @@ void setup() {
     ikutiKanan = IKUTI_KANAN_DEFAULT;
   }
 
-  stopRobot(0);
-
   Serial.println(F("========================================"));
   Serial.println(F("ROBOT WALL MAZE SOLVER (GYRO MPU-6050)"));
-  Serial.print(F("Mode Operasi: ")); Serial.println(MODE_OPERASI);
+  Serial.print(F("Mode Operasi  : ")); Serial.println(MODE_OPERASI);
+  Serial.print(F("Status Gyro   : ")); Serial.println(mpuDitemukan ? F("AKTIF") : F("FALLBACK WAKTU"));
   Serial.print(F("Aturan Dinding: ")); Serial.println(ikutiKanan ? F("KANAN") : F("KIRI"));
   Serial.println(F("========================================"));
 
@@ -433,9 +493,9 @@ void setup() {
     pinMode(PIN_TOMBOL_START, INPUT_PULLUP);
     Serial.println(F("Menunggu tombol START..."));
     while (digitalRead(PIN_TOMBOL_START) == HIGH) delay(50);
-    delay(1000);
+    delay(800);
   } else {
-    delay(1500);
+    delay(1000);
   }
 
   resetYaw();
@@ -444,17 +504,26 @@ void setup() {
 
 // ======================== LOOP UTAMA ========================
 void loop() {
-  // Update akumulasi yaw dari gyro
   updateYaw();
 
   // 1. Baca ketiga sensor ultrasonik secara berurutan
   float cmF  = bacaDepan();
-  delay(5);
+  delayWithGyro(5);
   float cmRF = bacaKanan();
-  delay(5);
+  delayWithGyro(5);
   float cmLF = bacaKiri();
 
-  // Tampilkan data ke Serial Monitor
+  // Filter anti-glitch: Jika depan terdeteksi dekat (<= DEPAN_STOP),
+  // lakukan 1x baca ulang cepat untuk memastikan bukan pantulan suara palsu
+  if (cmF <= DEPAN_STOP) {
+    delayWithGyro(5);
+    float cekUlangF = bacaDepan();
+    if (cekUlangF > DEPAN_STOP) {
+      cmF = cekUlangF;
+    }
+  }
+
+  // Tampilkan telemetri ke Serial Monitor
   Serial.print(F("LF: ")); Serial.print(cmLF, 1);
   Serial.print(F(" | F: ")); Serial.print(cmF, 1);
   Serial.print(F(" | RF: ")); Serial.print(cmRF, 1);
@@ -467,13 +536,12 @@ void loop() {
     if (ikutiKanan) {
       // ===== LOGIKA PENELUSURAN DINDING KANAN =====
       if (cmRF >= AMBANG_DEKAT && cmRF <= AMBANG_JAUH) {
-        // Posisi ideal di tengah lorong: maju lurus
         forward(SPEED_NORMAL, SPEED_NORMAL);
         Serial.println(F(" -> Maju Lurus (Ideal)"));
       }
       else if (cmRF > AMBANG_JAUH) {
         if (cmRF >= AMBANG_TERBUKA) {
-          // Dinding kanan hilang (celah/simpang kanan): ikuti dinding kiri
+          // Dinding kanan terbuka (simpang): gunakan pemandu dinding kiri
           if (cmLF >= AMBANG_DEKAT && cmLF <= AMBANG_JAUH) {
             forward(SPEED_NORMAL, SPEED_NORMAL);
             Serial.println(F(" -> Maju Lurus (Pemandu Kiri)"));
@@ -491,15 +559,15 @@ void loop() {
             Serial.println(F(" -> Maju Lurus (Simpang Terbuka)"));
           }
         } else {
-          // Masih ada dinding kanan tapi agak menjauh -> belok kanan halus
+          // Dinding kanan masih ada tapi agak menjauh (13 - 22 cm) -> serong kanan halus
           forward(SPEED_FAST, SPEED_SLOW);
           Serial.println(F(" -> Koreksi Kanan Halus"));
         }
       }
-      else if (cmRF < AMBANG_DEKAT) {
-        // Terlalu dekat ke dinding kanan -> belok kiri halus menjauh
+      else {
+        // cmRF < AMBANG_DEKAT: terlalu dekat ke dinding kanan -> serong kiri halus
         forward(SPEED_SLOW, SPEED_FAST);
-        Serial.println(F(" -> Koreksi Kiri Halus (Terlalu Dekat Kanan)"));
+        Serial.println(F(" -> Koreksi Kiri Halus (Menjauhi Kanan)"));
       }
 
     } else {
@@ -510,6 +578,7 @@ void loop() {
       }
       else if (cmLF > AMBANG_JAUH) {
         if (cmLF >= AMBANG_TERBUKA) {
+          // Dinding kiri terbuka: gunakan pemandu dinding kanan
           if (cmRF >= AMBANG_DEKAT && cmRF <= AMBANG_JAUH) {
             forward(SPEED_NORMAL, SPEED_NORMAL);
             Serial.println(F(" -> Maju Lurus (Pemandu Kanan)"));
@@ -531,9 +600,10 @@ void loop() {
           Serial.println(F(" -> Koreksi Kiri Halus"));
         }
       }
-      else if (cmLF < AMBANG_DEKAT) {
+      else {
+        // cmLF < AMBANG_DEKAT: terlalu dekat ke dinding kiri -> serong kanan halus
         forward(SPEED_FAST, SPEED_SLOW);
-        Serial.println(F(" -> Koreksi Kanan Halus (Terlalu Dekat Kiri)"));
+        Serial.println(F(" -> Koreksi Kanan Halus (Menjauhi Kiri)"));
       }
     }
   }
@@ -542,35 +612,51 @@ void loop() {
   // KONDISI B: DEPAN TERHALANG (cmF <= DEPAN_STOP) -> MANUVER GYRO
   // -------------------------------------------------------------
   else {
-    Serial.println(F("\n[HALANGAN] Depan Terhalang! Melakukan manuver belok Gyro..."));
+    Serial.println(F("\n[HALANGAN] Depan Terhalang! Berhenti & mengecek simpangan..."));
 
-    // Mundur sejenak memberi ruang putar
-    back(SPEED_BACK, SPEED_BACK);
-    delay(120);
+    // 1. Berhenti di titik persimpangan terlebih dahulu
     rem();
-    stopRobot(200);
+    stopRobot(120);
 
-    // Baca ulang sisi samping
-    delay(10);
-    cmRF = bacaKanan();
-    delay(10);
-    cmLF = bacaKiri();
+    // 2. Baca jarak samping saat posisi di persimpangan (rata-rata 2x agar akurat)
+    float ka1 = bacaKanan(); delayWithGyro(8);
+    float ki1 = bacaKiri();  delayWithGyro(8);
+    float ka2 = bacaKanan(); delayWithGyro(8);
+    float ki2 = bacaKiri();  delayWithGyro(8);
+    float fSekarang = bacaDepan();
 
-    bool kananBebas = (cmRF > AMBANG_TERBUKA);
-    bool kiriBebas  = (cmLF > AMBANG_TERBUKA);
+    // Gunakan rata-rata 2x pembacaan saat berhenti di persimpangan (sebelum mundur)
+    // agar pembacaan stabil dan celah belokan tidak terlewat
+    float jarakKanan = (ka1 + ka2) * 0.5f;
+    float jarakKiri  = (ki1 + ki2) * 0.5f;
 
-    Serial.print(F("Status Sisi -> Kiri Bebas: ")); Serial.print(kiriBebas ? F("YA") : F("TIDAK"));
-    Serial.print(F(" | Kanan Bebas: ")); Serial.println(kananBebas ? F("YA") : F("TIDAK"));
+    bool kananBebas = (jarakKanan > AMBANG_TERBUKA);
+    bool kiriBebas  = (jarakKiri  > AMBANG_TERBUKA);
 
-    // 1. Kiri dinding, Kanan terbuka -> Belok Kanan tepat 90° via Gyro
+    // 3. Mundur sedikit untuk ruang putar bodi depan
+    if (fSekarang < 11.0 || (!kananBebas && !kiriBebas)) {
+      back(SPEED_BACK, SPEED_BACK);
+      delayWithGyro(110);
+      rem();
+      stopRobot(120);
+    }
+
+    Serial.print(F("Status Sisi -> Kiri: ")); Serial.print(jarakKiri, 1);
+    Serial.print(F("cm (")); Serial.print(kiriBebas ? F("BEBAS") : F("DINDING"));
+    Serial.print(F(") | Kanan: ")); Serial.print(jarakKanan, 1);
+    Serial.print(F("cm (")); Serial.print(kananBebas ? F("BEBAS") : F("DINDING"));
+    Serial.println(F(")"));
+
+    // 4. Eksekusi keputusan belok dengan Gyroscope
+    // Kasus 1: Kiri tertutup, Kanan terbuka -> Belok Kanan 90°
     if (!kiriBebas && kananBebas) {
       turnRightGyro(90.0);
     }
-    // 2. Kiri terbuka, Kanan dinding -> Belok Kiri tepat 90° via Gyro
+    // Kasus 2: Kiri terbuka, Kanan tertutup -> Belok Kiri 90°
     else if (kiriBebas && !kananBebas) {
       turnLeftGyro(90.0);
     }
-    // 3. Simpang T (Kedua sisi terbuka) -> Belok 90° sesuai preferensi
+    // Kasus 3: Simpang T (Kedua sisi terbuka) -> Sesuai aturan dinding
     else if (kiriBebas && kananBebas) {
       if (ikutiKanan) {
         turnRightGyro(90.0);
@@ -578,17 +664,17 @@ void loop() {
         turnLeftGyro(90.0);
       }
     }
-    // 4. Jalan Buntu -> Putar Balik tepat 180° via Gyro
+    // Kasus 4: Jalan Buntu (Kedua sisi tertutup) -> Putar Balik 180°
     else {
       turn180Gyro();
     }
 
-    // Maju sejenak menjauhi sudut setelah selesai berputar
+    // 5. Maju sejenak memasuki lorong baru setelah selesai berputar
     forward(SPEED_NORMAL, SPEED_NORMAL);
-    delay(150);
+    delayWithGyro(150);
   }
 
-  delay(15);
+  delayWithGyro(12);
 }
 
 // ======================== MODUL TES GYRO & SENSOR ========================
@@ -596,18 +682,18 @@ void loop() {
 // MODE 1: Tes Sensor Ultrasonik + Gyro
 void jalankanTesSensor() {
   Serial.println(F("\n--- [MODE 1] TES SENSOR ULTRASONIK & GYRO (Motor MATI) ---"));
+  Serial.println(F("Putar robot dengan tangan untuk melihat perubahan sudut YAW GYRO."));
   while (true) {
-    updateYaw();
-    float f  = bacaDepan(); delay(10);
-    float ka = bacaKanan(); delay(10);
-    float ki = bacaKiri();  delay(10);
+    float f  = bacaDepan(); delayWithGyro(10);
+    float ka = bacaKanan(); delayWithGyro(10);
+    float ki = bacaKiri();  delayWithGyro(10);
 
     Serial.print(F("KIRI: ")); Serial.print(ki, 1);
     Serial.print(F(" cm | DEPAN: ")); Serial.print(f, 1);
     Serial.print(F(" cm | KANAN: ")); Serial.print(ka, 1);
     Serial.print(F(" cm | YAW GYRO: ")); Serial.print(yawAngle, 1);
     Serial.println(F("°"));
-    delay(200);
+    delayWithGyro(150);
   }
 }
 
@@ -615,7 +701,7 @@ void jalankanTesSensor() {
 void jalankanTesBelokGyro() {
   Serial.println(F("\n--- [MODE 2] TES BELOK GYROSCOPE 90° & 180° ---"));
   Serial.println(F("Robot akan: Belok Kanan 90° -> Stop -> Belok Kiri 90° -> Stop -> Putar 180°"));
-  delay(3000);
+  delayWithGyro(2500);
 
   while (true) {
     Serial.println(F("\n>> Mulai Belok Kanan 90° via Gyro..."));
@@ -631,14 +717,14 @@ void jalankanTesBelokGyro() {
     stopRobot(2500);
 
     Serial.println(F("\nSatu siklus selesai. Mengulang dalam 3 detik..."));
-    delay(3000);
+    delayWithGyro(3000);
   }
 }
 
 // MODE 3: Tes Maju Lurus Terkunci Heading Lock
 void jalankanTesHeadingLock() {
   Serial.println(F("\n--- [MODE 3] TES HEADING LOCK MAJU LURUS ---"));
-  delay(3000);
+  delayWithGyro(2500);
 
   while (true) {
     resetYaw();
@@ -646,7 +732,7 @@ void jalankanTesHeadingLock() {
     unsigned long start = millis();
     while (millis() - start < 3000) {
       forwardWithHeadingLock(SPEED_NORMAL, 0.0);
-      delay(10);
+      delay(5);
     }
     rem();
     stopRobot(2000);
